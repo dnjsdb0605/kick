@@ -1,0 +1,6 @@
+{
+  "name": "전동킥보드 도로교통 3D 시뮬레이터",
+  "description": "WebGL2 3D 도시 환경에서 자전거 도로, 차도 우측 가장자리, 인도 주행 금지, 횡단보도 하차 보행 등 전동킥보드 주행 규칙을 체험하고 경찰 단속을 피해 안전 주행을 완주하는 시뮬레이션 게임",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
