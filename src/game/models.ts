@@ -19,7 +19,8 @@ export interface KickboardRig {
     steerAngle: number,
     isBraking: boolean,
     isDismounted: boolean,
-    leanAngle: number
+    leanAngle: number,
+    fallProgress?: number
   ): void;
 }
 
@@ -411,7 +412,15 @@ export function createKickboardRig(
     leftArm,
     rightArm,
     tailLightMat,
-    updateAnimation(dt, speedMps, steerAngle, isBraking, isDismounted, leanAngle) {
+    updateAnimation(
+      dt,
+      speedMps,
+      steerAngle,
+      isBraking,
+      isDismounted,
+      leanAngle,
+      fallProgress = 0
+    ) {
       // Spin wheels based on distance
       const wheelRotDelta = (speedMps * dt) / 0.13;
       frontWheel.rotation.x -= wheelRotDelta;
@@ -427,6 +436,57 @@ export function createKickboardRig(
         14,
         dt
       );
+
+      if (fallProgress > 0) {
+        const p = THREE.MathUtils.clamp(fallProgress, 0, 1);
+        const smooth = (x: number) => {
+          const t = THREE.MathUtils.clamp(x, 0, 1);
+          return t * t * (3 - 2 * t);
+        };
+
+        // 0..0.24: pitch forward over handlebars; 0.24..0.68: sprawled on asphalt; 0.68..1: stand up
+        let fallPose = 0;
+        let tripArch = 0;
+        if (p < 0.24) {
+          const u = p / 0.24;
+          fallPose = 1 - Math.pow(1 - u, 2.2);
+          tripArch = Math.sin(u * Math.PI);
+        } else if (p < 0.68) {
+          const bounce =
+            Math.exp(-(p - 0.24) * 18) * Math.sin((p - 0.24) * 32) * 0.06;
+          fallPose = 1 - Math.abs(bounce);
+        } else {
+          fallPose = 1 - smooth((p - 0.68) / 0.32);
+        }
+
+        // Kickboard tips over sideways on impact after pitching nose down
+        scooterGroup.rotation.x = -0.22 * tripArch;
+        scooterGroup.rotation.z = 1.18 * fallPose;
+        scooterGroup.position.y = 0.08 * fallPose;
+
+        // Rider flies forward (-Z) and pitches face-down onto road
+        riderGroup.position.x = 0.12 * fallPose;
+        riderGroup.position.y =
+          THREE.MathUtils.lerp(0.2, 0.17, fallPose) + 0.32 * tripArch;
+        riderGroup.position.z =
+          THREE.MathUtils.lerp(0.14, -0.58, fallPose);
+        riderGroup.rotation.x = -Math.PI * 0.48 * fallPose;
+        riderGroup.rotation.z = -0.18 * fallPose;
+
+        // Arms reach forward to brace, legs kick back during the trip
+        leftArm.rotation.x = THREE.MathUtils.lerp(0.88, 2.15, fallPose);
+        rightArm.rotation.x = THREE.MathUtils.lerp(0.88, 2.05, fallPose);
+        leftArm.rotation.z = THREE.MathUtils.lerp(0.08, 0.24, fallPose);
+        rightArm.rotation.z = THREE.MathUtils.lerp(-0.08, -0.24, fallPose);
+        leftLeg.rotation.x = THREE.MathUtils.lerp(0.18, -0.35, fallPose) - 0.3 * tripArch;
+        rightLeg.rotation.x = THREE.MathUtils.lerp(-0.24, -0.5, fallPose) - 0.25 * tripArch;
+        return;
+      }
+
+      // Reset upright scooter offsets when not falling
+      scooterGroup.rotation.x = 0;
+      scooterGroup.position.y = 0;
+      riderGroup.rotation.x = 0;
 
       // Smoothly blend between mounted riding pose (0) and walking-beside-kickboard pose (1)
       dismountBlend = THREE.MathUtils.damp(
@@ -1441,3 +1501,425 @@ export function createSchoolCampus(
 
   return group;
 }
+
+export function createRoadRock(seed: number): THREE.Group {
+  const group = new THREE.Group();
+  const mainRockMat = new THREE.MeshStandardMaterial({
+    color: seed % 2 === 0 ? 0x64748b : 0x78716c,
+    roughness: 0.92,
+    metalness: 0.04,
+    flatShading: true,
+  });
+  const pebbleMat = new THREE.MeshStandardMaterial({
+    color: 0x475569,
+    roughness: 0.88,
+    flatShading: true,
+  });
+  const markerMat = new THREE.MeshStandardMaterial({
+    color: 0xf97316,
+    emissive: 0xf97316,
+    emissiveIntensity: 0.35,
+    roughness: 0.65,
+  });
+
+  // Main jagged rock outcrop (grounded bottom-center)
+  const mainRock = new THREE.Mesh(new THREE.DodecahedronGeometry(0.32, 0), mainRockMat);
+  mainRock.scale.set(1.25, 0.72, 1.05);
+  mainRock.rotation.set((seed * 0.7) % Math.PI, (seed * 1.1) % Math.PI, 0);
+  mainRock.position.set(0, 0.14, 0);
+  mainRock.castShadow = true;
+  mainRock.receiveShadow = true;
+  group.add(mainRock);
+
+  // Flanking pebbles & grit
+  const p1 = new THREE.Mesh(new THREE.DodecahedronGeometry(0.16, 0), pebbleMat);
+  p1.scale.set(1.1, 0.65, 1.2);
+  p1.position.set(-0.28, 0.08, 0.14);
+  p1.castShadow = true;
+  const p2 = new THREE.Mesh(new THREE.DodecahedronGeometry(0.13, 0), pebbleMat);
+  p2.scale.set(1.2, 0.6, 0.9);
+  p2.position.set(0.26, 0.06, -0.12);
+  p2.castShadow = true;
+  group.add(p1, p2);
+
+  // Subtle asphalt crack / hazard ring around rock base
+  const crackRing = new THREE.Mesh(
+    new THREE.RingGeometry(0.36, 0.44, 14).rotateX(-Math.PI / 2),
+    markerMat
+  );
+  crackRing.position.y = 0.018;
+  group.add(crackRing);
+
+  return group;
+}
+
+export function createWaterPuddle(radius = 1.1): THREE.Group {
+  const group = new THREE.Group();
+
+  // Outer wet asphalt stain ring
+  const wetRim = new THREE.Mesh(
+    new THREE.CircleGeometry(radius * 1.16, 22).rotateX(-Math.PI / 2),
+    new THREE.MeshStandardMaterial({
+      color: 0x0f172a,
+      roughness: 0.3,
+      metalness: 0.1,
+      transparent: true,
+      opacity: 0.55,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+    })
+  );
+  wetRim.position.y = 0.015;
+  group.add(wetRim);
+
+  // Glossy sky-reflective puddle surface
+  const waterSurface = new THREE.Mesh(
+    new THREE.CircleGeometry(radius, 22).rotateX(-Math.PI / 2),
+    new THREE.MeshPhysicalMaterial({
+      color: 0x38bdf8,
+      roughness: 0.05,
+      metalness: 0.18,
+      clearcoat: 1.0,
+      clearcoatRoughness: 0.04,
+      transparent: true,
+      opacity: 0.72,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    })
+  );
+  waterSurface.scale.set(1.18, 1, 0.88);
+  waterSurface.position.y = 0.022;
+  group.add(waterSurface);
+
+  // Inner specular ripple ring
+  const ripple = new THREE.Mesh(
+    new THREE.RingGeometry(radius * 0.42, radius * 0.5, 18).rotateX(-Math.PI / 2),
+    new THREE.MeshBasicMaterial({
+      color: 0xbae6fd,
+      transparent: true,
+      opacity: 0.45,
+      depthWrite: false,
+    })
+  );
+  ripple.position.y = 0.028;
+  group.add(ripple);
+
+  return group;
+}
+
+export interface PetRig {
+  root: THREE.Group;
+  kind: 'dog' | 'cat';
+  legs: THREE.Mesh[];
+  tailPivot: THREE.Group;
+  headGroup: THREE.Group;
+}
+
+export function createPetRig(
+  kind: 'dog' | 'cat',
+  furColor: number,
+  contactShadowTex: THREE.Texture
+): PetRig {
+  const root = new THREE.Group();
+  const scale = kind === 'dog' ? 1.0 : 0.78;
+
+  const shadow = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.65 * scale, 0.9 * scale),
+    new THREE.MeshBasicMaterial({
+      map: contactShadowTex,
+      transparent: true,
+      depthWrite: false,
+      opacity: 0.42,
+    })
+  );
+  shadow.rotation.x = -Math.PI / 2;
+  shadow.position.y = 0.02;
+  root.add(shadow);
+
+  const furMat = new THREE.MeshStandardMaterial({ color: furColor, roughness: 0.82 });
+  const snoutMat = new THREE.MeshStandardMaterial({ color: 0xfef3c7, roughness: 0.75 });
+  const noseMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.35 });
+  const collarMat = new THREE.MeshStandardMaterial({
+    color: kind === 'dog' ? 0xef4444 : 0x06b6d4,
+    roughness: 0.4,
+  });
+  const tagMat = new THREE.MeshStandardMaterial({
+    color: 0xfacc15,
+    metalness: 0.85,
+    roughness: 0.2,
+  });
+
+  // Body
+  const body = new THREE.Mesh(
+    new THREE.CapsuleGeometry(0.14 * scale, 0.34 * scale, 6, 10).rotateX(Math.PI / 2),
+    furMat
+  );
+  body.position.set(0, 0.32 * scale, 0);
+  body.castShadow = true;
+  root.add(body);
+
+  // Collar + gold bell tag
+  const collar = new THREE.Mesh(
+    new THREE.TorusGeometry(0.125 * scale, 0.024 * scale, 8, 16),
+    collarMat
+  );
+  collar.position.set(0, 0.37 * scale, -0.2 * scale);
+  root.add(collar);
+
+  const tag = new THREE.Mesh(new THREE.SphereGeometry(0.032 * scale, 8, 8), tagMat);
+  tag.position.set(0, 0.25 * scale, -0.24 * scale);
+  root.add(tag);
+
+  // Head + ears + snout
+  const headGroup = new THREE.Group();
+  headGroup.position.set(0, 0.45 * scale, -0.26 * scale);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.135 * scale, 12, 10), furMat);
+  head.castShadow = true;
+  headGroup.add(head);
+
+  const snout = new THREE.Mesh(
+    new THREE.BoxGeometry(0.11 * scale, 0.08 * scale, 0.12 * scale),
+    snoutMat
+  );
+  snout.position.set(0, -0.02 * scale, -0.12 * scale);
+  const nose = new THREE.Mesh(new THREE.SphereGeometry(0.026 * scale, 8, 8), noseMat);
+  nose.position.set(0, 0.005 * scale, -0.18 * scale);
+  headGroup.add(snout, nose);
+
+  if (kind === 'cat') {
+    // Pointed cat ears
+    const earGeo = new THREE.ConeGeometry(0.045 * scale, 0.1 * scale, 4);
+    [-0.08, 0.08].forEach((ex) => {
+      const ear = new THREE.Mesh(earGeo, furMat);
+      ear.position.set(ex * scale, 0.13 * scale, 0);
+      headGroup.add(ear);
+    });
+  } else {
+    // Floppy dog ears
+    const earGeo = new THREE.BoxGeometry(0.045 * scale, 0.13 * scale, 0.07 * scale);
+    [-0.125, 0.125].forEach((ex) => {
+      const ear = new THREE.Mesh(earGeo, noseMat);
+      ear.position.set(ex * scale, 0.01 * scale, 0.02 * scale);
+      ear.rotation.z = ex < 0 ? 0.22 : -0.22;
+      headGroup.add(ear);
+    });
+  }
+  root.add(headGroup);
+
+  // Wagging tail
+  const tailPivot = new THREE.Group();
+  tailPivot.position.set(0, 0.36 * scale, 0.24 * scale);
+  const tailMesh = new THREE.Mesh(
+    new THREE.CapsuleGeometry(0.032 * scale, kind === 'cat' ? 0.28 * scale : 0.18 * scale, 4, 8),
+    furMat
+  );
+  tailMesh.rotation.x = -0.65;
+  tailMesh.position.set(0, 0.1 * scale, 0.09 * scale);
+  tailPivot.add(tailMesh);
+  root.add(tailPivot);
+
+  // 4 Articulated legs
+  const legGeo = new THREE.CapsuleGeometry(0.038 * scale, 0.16 * scale, 4, 8);
+  const legPositions: [number, number, number][] = [
+    [-0.08 * scale, 0.15 * scale, -0.15 * scale],
+    [0.08 * scale, 0.15 * scale, -0.15 * scale],
+    [-0.08 * scale, 0.15 * scale, 0.15 * scale],
+    [0.08 * scale, 0.15 * scale, 0.15 * scale],
+  ];
+  const legs = legPositions.map(([lx, ly, lz]) => {
+    const leg = new THREE.Mesh(legGeo, furMat);
+    leg.position.set(lx, ly, lz);
+    leg.castShadow = true;
+    root.add(leg);
+    return leg;
+  });
+
+  return { root, kind, legs, tailPivot, headGroup };
+}
+
+export interface MotorcycleRig {
+  root: THREE.Group;
+  frontWheel: THREE.Mesh;
+  rearWheel: THREE.Mesh;
+}
+
+export function createMotorcycleRig(
+  bodyColor: number,
+  contactShadowTex: THREE.Texture
+): MotorcycleRig {
+  const root = new THREE.Group();
+
+  const shadow = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.4, 2.7),
+    new THREE.MeshBasicMaterial({
+      map: contactShadowTex,
+      transparent: true,
+      depthWrite: false,
+      opacity: 0.48,
+    })
+  );
+  shadow.rotation.x = -Math.PI / 2;
+  shadow.position.y = 0.025;
+  root.add(shadow);
+
+  const paintMat = new THREE.MeshPhysicalMaterial({
+    color: bodyColor,
+    roughness: 0.24,
+    metalness: 0.52,
+    clearcoat: 0.85,
+  });
+  const engineMat = new THREE.MeshStandardMaterial({
+    color: 0x334155,
+    roughness: 0.45,
+    metalness: 0.78,
+  });
+  const chromeMat = new THREE.MeshStandardMaterial({
+    color: 0xe2e8f0,
+    roughness: 0.18,
+    metalness: 0.92,
+  });
+  const tireMat = new THREE.MeshStandardMaterial({ color: 0x171717, roughness: 0.88 });
+  const seatMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.85 });
+
+  // Chunky Sport Motorcycle Wheels
+  const wheelGeo = new THREE.CylinderGeometry(0.32, 0.32, 0.16, 18).rotateZ(Math.PI / 2);
+  const rimGeo = new THREE.CylinderGeometry(0.19, 0.19, 0.17, 12).rotateZ(Math.PI / 2);
+
+  const frontWheel = new THREE.Mesh(wheelGeo, tireMat);
+  frontWheel.position.set(0, 0.32, -0.74);
+  frontWheel.castShadow = true;
+  frontWheel.add(new THREE.Mesh(rimGeo, chromeMat));
+
+  const rearWheel = new THREE.Mesh(wheelGeo, tireMat);
+  rearWheel.position.set(0, 0.32, 0.74);
+  rearWheel.castShadow = true;
+  rearWheel.add(new THREE.Mesh(rimGeo, chromeMat));
+  root.add(frontWheel, rearWheel);
+
+  // Engine block + twin chrome exhaust pipes
+  const engine = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.34, 0.56), engineMat);
+  engine.position.set(0, 0.44, 0);
+  engine.castShadow = true;
+  root.add(engine);
+
+  [-0.22, 0.22].forEach((ex) => {
+    const pipe = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.045, 0.055, 0.95, 10).rotateX(Math.PI / 2),
+      chromeMat
+    );
+    pipe.position.set(ex, 0.3, 0.38);
+    root.add(pipe);
+  });
+
+  // Fuel tank + front fairing + windshield + seat
+  const tank = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.26, 0.58), paintMat);
+  tank.position.set(0, 0.78, -0.18);
+  tank.castShadow = true;
+
+  const frontCowl = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.36, 0.48), paintMat);
+  frontCowl.rotation.x = 0.28;
+  frontCowl.position.set(0, 0.84, -0.58);
+  frontCowl.castShadow = true;
+
+  const windshield = new THREE.Mesh(
+    new THREE.BoxGeometry(0.38, 0.28, 0.04),
+    new THREE.MeshStandardMaterial({
+      color: 0x0f172a,
+      roughness: 0.12,
+      metalness: 0.75,
+      transparent: true,
+      opacity: 0.8,
+    })
+  );
+  windshield.rotation.x = -0.45;
+  windshield.position.set(0, 1.08, -0.56);
+
+  const seat = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.14, 0.66), seatMat);
+  seat.position.set(0, 0.76, 0.34);
+
+  const fork = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.032, 0.032, 0.76, 8),
+    chromeMat
+  );
+  fork.rotation.x = 0.32;
+  fork.position.set(0, 0.64, -0.56);
+
+  const handlebar = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.022, 0.022, 0.68, 8).rotateZ(Math.PI / 2),
+    engineMat
+  );
+  handlebar.position.set(0, 0.98, -0.44);
+
+  root.add(tank, frontCowl, windshield, seat, fork, handlebar);
+
+  // Headlight + Red Taillight
+  const headlight = new THREE.Mesh(
+    new THREE.BoxGeometry(0.24, 0.12, 0.06),
+    new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      emissive: 0xfef08a,
+      emissiveIntensity: 1.8,
+    })
+  );
+  headlight.position.set(0, 0.82, -0.84);
+  const taillight = new THREE.Mesh(
+    new THREE.BoxGeometry(0.2, 0.09, 0.06),
+    new THREE.MeshStandardMaterial({
+      color: 0xdc2626,
+      emissive: 0xef4444,
+      emissiveIntensity: 1.4,
+    })
+  );
+  taillight.position.set(0, 0.78, 0.88);
+  root.add(headlight, taillight);
+
+  // Motorcyclist Rider (full-face helmet + riding jacket)
+  const jacketMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.62 });
+  const helmetMat = new THREE.MeshStandardMaterial({
+    color: 0xf8fafc,
+    roughness: 0.2,
+    metalness: 0.25,
+  });
+  const visorMat = new THREE.MeshStandardMaterial({
+    color: 0x020617,
+    roughness: 0.1,
+    metalness: 0.85,
+  });
+
+  const riderTorso = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.48, 0.22), jacketMat);
+  riderTorso.rotation.x = 0.42;
+  riderTorso.position.set(0, 1.08, 0.12);
+  riderTorso.castShadow = true;
+
+  const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.165, 14, 12), helmetMat);
+  helmet.position.set(0, 1.42, -0.06);
+  helmet.castShadow = true;
+
+  const visor = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.09, 0.12), visorMat);
+  visor.position.set(0, 1.41, -0.18);
+
+  const legGeo = new THREE.CapsuleGeometry(0.065, 0.42, 4, 8);
+  [-0.18, 0.18].forEach((lx) => {
+    const leg = new THREE.Mesh(legGeo, seatMat);
+    leg.rotation.x = -0.35;
+    leg.position.set(lx, 0.62, 0.12);
+    root.add(leg);
+  });
+
+  const armGeo = new THREE.CapsuleGeometry(0.048, 0.42, 4, 8);
+  [-0.22, 0.22].forEach((ax) => {
+    const arm = new THREE.Mesh(armGeo, jacketMat);
+    arm.rotation.x = 1.05;
+    arm.position.set(ax, 1.06, -0.2);
+    root.add(arm);
+  });
+
+  root.add(riderTorso, helmet, visor);
+
+  return { root, frontWheel, rearWheel };
+}
+

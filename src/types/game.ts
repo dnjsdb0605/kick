@@ -149,6 +149,8 @@ export interface TelemetrySnapshot {
   ewPedRemaining: number;
   nsPedRemaining: number;
   nearPhoneWalker: boolean;
+  nearPet: boolean;
+  hazardAlert: string | null;
   playerX: number;
   playerZ: number;
   playerHeading: number;

@@ -6,6 +6,7 @@ import {
   TelemetrySnapshot,
 } from '../types/game';
 import {
+  AlertTriangle,
   Bell,
   Camera,
   ChevronDown,
@@ -14,6 +15,7 @@ import {
   Footprints,
   GraduationCap,
   Pause,
+  PawPrint,
   ShieldAlert,
   Smartphone,
   Volume2,
@@ -308,6 +310,20 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             <div className="flex items-center gap-1.5 bg-[#1e1b4b]/95 border border-cyan-400 text-cyan-200 text-xs font-bold px-3.5 py-1.5 rounded-xl shadow-lg">
               <Smartphone className="w-3.5 h-3.5 text-cyan-300 shrink-0" />
               <span>자전거도로 내 스마트폰 보행자 주의! [B] 벨을 울려주세요</span>
+            </div>
+          )}
+
+          {telemetry.nearPet && (
+            <div className="flex items-center gap-1.5 bg-[#2a1808]/95 border border-amber-400 text-amber-200 text-xs font-bold px-3.5 py-1.5 rounded-xl shadow-lg">
+              <PawPrint className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+              <span>도로 주변 애완동물 주의! 감속하거나 [B] 벨을 울려주세요</span>
+            </div>
+          )}
+
+          {telemetry.hazardAlert && (
+            <div className="flex items-center gap-1.5 bg-[#2a120a]/95 border border-orange-400 text-orange-200 text-xs font-bold px-3.5 py-1.5 rounded-xl shadow-lg">
+              <AlertTriangle className="w-3.5 h-3.5 text-orange-300 shrink-0" />
+              <span>{telemetry.hazardAlert}</span>
             </div>
           )}
 

@@ -43,6 +43,8 @@ const INITIAL_TELEMETRY: TelemetrySnapshot = {
   ewPedRemaining: 22,
   nsPedRemaining: 20,
   nearPhoneWalker: false,
+  nearPet: false,
+  hazardAlert: null,
   playerX: -48,
   playerZ: 78.2,
   playerHeading: -Math.PI / 2,

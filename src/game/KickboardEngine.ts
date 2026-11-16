@@ -31,11 +31,17 @@ import {
   BicycleRig,
   createBicycleRig,
   createKickboardRig,
+  createMotorcycleRig,
   createPedestrian,
+  createPetRig,
   createPhoneWalkerRig,
   createPoliceCarRig,
+  createRoadRock,
   createTrafficCar,
+  createWaterPuddle,
   KickboardRig,
+  MotorcycleRig,
+  PetRig,
   PhoneWalkerRig,
   PoliceCarRig,
 } from './models';
@@ -62,6 +68,9 @@ interface TrafficAgent {
   path: Array<{ x: number; z: number }>;
   segIndex: number;
   t: number;
+  x: number;
+  z: number;
+  heading: number;
   speed: number;
   maxSpeed: number;
 }
@@ -110,6 +119,48 @@ interface PhoneWalkerAgent {
   yieldedTimer: number;
 }
 
+interface RockHazard {
+  x: number;
+  z: number;
+  radius: number;
+}
+
+interface PuddleHazard {
+  x: number;
+  z: number;
+  radius: number;
+  splashCooldown: number;
+}
+
+interface PetAgent {
+  rig: PetRig;
+  x0: number;
+  z0: number;
+  x1: number;
+  z1: number;
+  safeX: number;
+  safeZ: number;
+  x: number;
+  z: number;
+  progress: number;
+  dir: 1 | -1;
+  speed: number;
+  phase: number;
+  yieldedTimer: number;
+}
+
+interface MotorcycleAgent {
+  rig: MotorcycleRig;
+  path: Array<{ x: number; z: number }>;
+  segIndex: number;
+  t: number;
+  x: number;
+  z: number;
+  heading: number;
+  speed: number;
+  maxSpeed: number;
+}
+
 interface PoliceAgent {
   rig: PoliceCarRig;
   x: number;
@@ -122,15 +173,49 @@ interface PoliceAgent {
   chaseElapsed: number;
 }
 
+const ROAD_CCW_PATH: Array<{ x: number; z: number }> = [
+  { x: -87.0, z: 72.2 }, // seg 0: South street Eastbound
+  { x: 87.0, z: 72.2 },
+  { x: 91.0, z: 71.0 },
+  { x: 92.2, z: 67.0 },  // seg 3: East street Northbound
+  { x: 92.2, z: -67.0 },
+  { x: 91.0, z: -71.0 },
+  { x: 87.0, z: -72.2 }, // seg 6: North street Westbound
+  { x: -87.0, z: -72.2 },
+  { x: -91.0, z: -71.0 },
+  { x: -92.2, z: -67.0 }, // seg 9: West street Southbound
+  { x: -92.2, z: 67.0 },
+  { x: -91.0, z: 71.0 },
+];
+
+const ROAD_CW_PATH: Array<{ x: number; z: number }> = [
+  { x: 84.2, z: 66.5 },  // seg 0: South street Westbound
+  { x: -84.2, z: 66.5 },
+  { x: -85.7, z: 65.7 },
+  { x: -86.5, z: 64.2 }, // seg 3: West street Northbound
+  { x: -86.5, z: -64.2 },
+  { x: -85.7, z: -65.7 },
+  { x: -84.2, z: -66.5 }, // seg 6: North street Eastbound
+  { x: 84.2, z: -66.5 },
+  { x: 85.7, z: -65.7 },
+  { x: 86.5, z: -64.2 }, // seg 9: East street Southbound
+  { x: 86.5, z: 64.2 },
+  { x: 85.7, z: 65.7 },
+];
+
 const POLICE_PATROL_LOOP: Array<{ x: number; z: number }> = [
-  { x: -65, z: 73.2 },
-  { x: 65, z: 73.2 },
-  { x: 93.2, z: 45 },
-  { x: 93.2, z: -45 },
-  { x: 65, z: -73.2 },
-  { x: -65, z: -73.2 },
-  { x: -93.2, z: -45 },
-  { x: -93.2, z: 45 },
+  { x: -88.0, z: 73.2 },
+  { x: 88.0, z: 73.2 },
+  { x: 92.2, z: 72.2 },
+  { x: 93.2, z: 68.0 },
+  { x: 93.2, z: -68.0 },
+  { x: 92.2, z: -72.2 },
+  { x: 88.0, z: -73.2 },
+  { x: -88.0, z: -73.2 },
+  { x: -92.2, z: -72.2 },
+  { x: -93.2, z: -68.0 },
+  { x: -93.2, z: 68.0 },
+  { x: -92.2, z: 72.2 },
 ];
 
 export class KickboardEngine {
@@ -148,9 +233,13 @@ export class KickboardEngine {
 
   private policeAgents: PoliceAgent[] = [];
   private trafficAgents: TrafficAgent[] = [];
+  private motorcycles: MotorcycleAgent[] = [];
   private pedestrians: PedestrianAgent[] = [];
   private cyclists: CyclistAgent[] = [];
   private phoneWalkers: PhoneWalkerAgent[] = [];
+  private pets: PetAgent[] = [];
+  private rockHazards: RockHazard[] = [];
+  private puddleHazards: PuddleHazard[] = [];
 
   private scooterType: ScooterType = 'standard';
   private customPixels: string[] = createDefaultCustomPixels();
@@ -164,6 +253,11 @@ export class KickboardEngine {
   private hitstopTimer = 0;
   private shakeTimer = 0;
   private shakeIntensity = 0;
+  private rockHitCooldown = 0;
+  private fallTimer = 0;
+  private readonly fallDuration = 1.5;
+  private hazardAlertMessage: string | null = null;
+  private hazardAlertTimer = 0;
 
   // Game state
   private phase: GamePhase = 'title';
@@ -306,12 +400,15 @@ export class KickboardEngine {
     );
     this.scene.add(this.kickboard.root);
 
-    // Spawn Police Cruisers, Traffic, Pedestrians, Cyclists & Distracted Phone Walkers
+    // Spawn Police Cruisers, Traffic, Motorcycles, Pedestrians, Cyclists, Phone Walkers, Pets & Road Hazards
     this.spawnPolicePatrols();
     this.spawnTrafficCars();
+    this.spawnMotorcycles();
     this.spawnPedestrians();
     this.spawnCyclists();
     this.spawnPhoneWalkers();
+    this.spawnPets();
+    this.spawnRoadHazards();
 
     this.resetPlayerState();
     this.syncCheckpointVisual();
@@ -323,7 +420,7 @@ export class KickboardEngine {
   }
 
   private spawnPolicePatrols() {
-    const startIndices = [2, 6];
+    const startIndices = [3, 9];
     startIndices.forEach((idx) => {
       const rig = createPoliceCarRig(
         this.textures.policeSide,
@@ -340,7 +437,7 @@ export class KickboardEngine {
         x: p.x,
         z: p.z,
         heading: h,
-        speed: 11.5,
+        speed: 9.5,
         patrolIndex: (idx + 1) % POLICE_PATROL_LOOP.length,
         state: 'patrol',
         targetViolation: null,
@@ -350,43 +447,78 @@ export class KickboardEngine {
   }
 
   private spawnTrafficCars() {
-    const colors = [0x3b82f6, 0x64748b, 0xef4444, 0xf59e0b, 0x10b981, 0xe2e8f0];
-    // Outer forward car lane path (counter-clockwise) + inner opposing car lane (clockwise)
-    const ccwPath = [
-      { x: -75, z: 72.2 },
-      { x: 75, z: 72.2 },
-      { x: 92.2, z: 55 },
-      { x: 92.2, z: -55 },
-      { x: 75, z: -72.2 },
-      { x: -75, z: -72.2 },
-      { x: -92.2, z: -55 },
-      { x: -92.2, z: 55 },
+    const colors = [
+      0x3b82f6, 0x64748b, 0xef4444, 0xf59e0b,
+      0x10b981, 0xe2e8f0, 0x6366f1, 0xec4899,
+      0x0ea5e9, 0x14b8a6, 0xf97316, 0x8b5cf6,
+      0x334155, 0x22c55e, 0xeab308, 0xf43f5e,
     ];
-    const cwPath = [
-      { x: 75, z: 66.5 },
-      { x: -75, z: 66.5 },
-      { x: -86.5, z: 55 },
-      { x: -86.5, z: -55 },
-      { x: -75, z: -66.5 },
-      { x: 75, z: -66.5 },
-      { x: 86.5, z: -55 },
-      { x: 86.5, z: 55 },
-    ];
+    // 16 total cars (8 CCW outer lane + 8 CW inner lane) evenly spaced on the 4 avenues
+    const straightSegs = [0, 3, 6, 9];
+    const tSlots = [0.22, 0.72];
 
-    for (let i = 0; i < 6; i++) {
-      const path = i % 2 === 0 ? ccwPath : cwPath;
-      const segIndex = (i * 2) % path.length;
-      const rig = createTrafficCar(colors[i], this.textures.contactShadow);
+    for (let i = 0; i < 16; i++) {
+      const isCcw = i < 8;
+      const laneIdx = i % 8;
+      const path = isCcw ? ROAD_CCW_PATH : ROAD_CW_PATH;
+      const segIndex = straightSegs[Math.floor(laneIdx / 2)];
+      const t = tSlots[laneIdx % 2] + (isCcw ? 0 : 0.06);
+      const p0 = path[segIndex];
+      const p1 = path[(segIndex + 1) % path.length];
+      const x = THREE.MathUtils.lerp(p0.x, p1.x, t);
+      const z = THREE.MathUtils.lerp(p0.z, p1.z, t);
+      const heading = Math.atan2(-(p1.x - p0.x), -(p1.z - p0.z));
+      const maxSpeed = 8.5 + (i % 4) * 1.1;
+
+      const rig = createTrafficCar(colors[i % colors.length], this.textures.contactShadow);
+      rig.root.position.set(x, 0, z);
+      rig.root.rotation.y = heading;
       this.scene.add(rig.root);
       this.trafficAgents.push({
         rig,
         path,
         segIndex,
-        t: (i * 0.31) % 1,
-        speed: 9 + (i % 3) * 1.5,
-        maxSpeed: 9 + (i % 3) * 1.5,
+        t,
+        x,
+        z,
+        heading,
+        speed: maxSpeed,
+        maxSpeed,
       });
     }
+  }
+
+  private spawnMotorcycles() {
+    const bikeColors = [0xdc2626, 0x0284c7, 0xfacc15, 0x10b981, 0xf97316];
+    const configs = [
+      { path: ROAD_CCW_PATH, segIndex: 0, t: 0.48, maxSpeed: 12.6 },
+      { path: ROAD_CW_PATH, segIndex: 0, t: 0.44, maxSpeed: 13.0 },
+      { path: ROAD_CCW_PATH, segIndex: 3, t: 0.5, maxSpeed: 12.2 },
+      { path: ROAD_CCW_PATH, segIndex: 6, t: 0.48, maxSpeed: 13.4 },
+      { path: ROAD_CW_PATH, segIndex: 9, t: 0.45, maxSpeed: 12.8 },
+    ];
+    configs.forEach((cfg, i) => {
+      const p0 = cfg.path[cfg.segIndex];
+      const p1 = cfg.path[(cfg.segIndex + 1) % cfg.path.length];
+      const x = THREE.MathUtils.lerp(p0.x, p1.x, cfg.t);
+      const z = THREE.MathUtils.lerp(p0.z, p1.z, cfg.t);
+      const heading = Math.atan2(-(p1.x - p0.x), -(p1.z - p0.z));
+      const rig = createMotorcycleRig(bikeColors[i % bikeColors.length], this.textures.contactShadow);
+      rig.root.position.set(x, 0, z);
+      rig.root.rotation.y = heading;
+      this.scene.add(rig.root);
+      this.motorcycles.push({
+        rig,
+        path: cfg.path,
+        segIndex: cfg.segIndex,
+        t: cfg.t,
+        x,
+        z,
+        heading,
+        speed: cfg.maxSpeed,
+        maxSpeed: cfg.maxSpeed,
+      });
+    });
   }
 
   private spawnPedestrians() {
@@ -514,6 +646,92 @@ export class KickboardEngine {
     });
   }
 
+  private spawnPets() {
+    const petSpecs: Array<{
+      kind: 'dog' | 'cat';
+      fur: number;
+      x0: number;
+      z0: number;
+      x1: number;
+      z1: number;
+      safeX: number;
+      safeZ: number;
+      speed: number;
+    }> = [
+      { kind: 'dog', fur: 0xd97706, x0: -32, z0: 81.2, x1: -24, z1: 78.7, safeX: -28, safeZ: 82.6, speed: 1.55 },
+      { kind: 'cat', fur: 0xfb923c, x0: 42, z0: 81.0, x1: 50, z1: 78.7, safeX: 46, safeZ: 82.6, speed: 1.35 },
+      { kind: 'dog', fur: 0x92400e, x0: 99.6, z0: 26, x1: 96.4, z1: 18, safeX: 100.8, safeZ: 22, speed: 1.5 },
+      { kind: 'cat', fur: 0xfef3c7, x0: 24, z0: -81.0, x1: 14, z1: -78.7, safeX: 19, safeZ: -82.6, speed: 1.3 },
+      { kind: 'dog', fur: 0x334155, x0: -99.6, z0: -18, x1: -96.4, z1: -10, safeX: -100.8, safeZ: -14, speed: 1.6 },
+    ];
+    petSpecs.forEach((s, i) => {
+      const rig = createPetRig(s.kind, s.fur, this.textures.contactShadow);
+      const progress = (i * 0.29) % 1;
+      const x = THREE.MathUtils.lerp(s.x0, s.x1, progress);
+      const z = THREE.MathUtils.lerp(s.z0, s.z1, progress);
+      rig.root.position.set(x, getGroundHeightAt(x, z), z);
+      this.scene.add(rig.root);
+      this.pets.push({
+        rig,
+        x0: s.x0,
+        z0: s.z0,
+        x1: s.x1,
+        z1: s.z1,
+        safeX: s.safeX,
+        safeZ: s.safeZ,
+        x,
+        z,
+        progress,
+        dir: i % 2 === 0 ? 1 : -1,
+        speed: s.speed,
+        phase: i * 1.7,
+        yieldedTimer: 0,
+      });
+    });
+  }
+
+  private spawnRoadHazards() {
+    // 10 road rock outcrops (돌부리) placed along bike lanes & right edges with room to steer past
+    const rockCoords: [number, number][] = [
+      [-20, 77.7],
+      [16, 78.7],
+      [48, 77.8],
+      [96.3, 34],
+      [95.4, -18],
+      [44, -77.8],
+      [-18, -78.6],
+      [-52, -77.8],
+      [-96.3, -26],
+      [-95.5, 28],
+    ];
+    rockCoords.forEach(([rx, rz], i) => {
+      const rock = createRoadRock(i);
+      const y = getGroundHeightAt(rx, rz);
+      rock.position.set(rx, y, rz);
+      this.scene.add(rock);
+      this.rockHazards.push({ x: rx, z: rz, radius: 0.44 });
+    });
+
+    // 8 glossy water puddles (물웅덩이) on bike lanes & road right edges
+    const puddleCoords: [number, number, number][] = [
+      [-6, 78.3, 1.05],
+      [32, 78.1, 1.15],
+      [62, 78.4, 1.0],
+      [96.0, 14, 1.15],
+      [96.1, -36, 1.05],
+      [18, -78.2, 1.1],
+      [-36, -78.1, 1.15],
+      [-96.0, -4, 1.1],
+    ];
+    puddleCoords.forEach(([px, pz, r]) => {
+      const puddle = createWaterPuddle(r);
+      const y = getGroundHeightAt(px, pz);
+      puddle.position.set(px, y, pz);
+      this.scene.add(puddle);
+      this.puddleHazards.push({ x: px, z: pz, radius: r, splashCooldown: 0 });
+    });
+  }
+
   private resetPlayerState() {
     this.px = -48;
     this.pz = 78.2;
@@ -535,10 +753,14 @@ export class KickboardEngine {
     this.missionElapsed = 0;
     this.enteredCrosswalkOnRed = false;
     this.wasInCrosswalk = false;
+    this.fallTimer = 0;
+    this.rockHitCooldown = 0;
+    this.hazardAlertTimer = 0;
+    this.hazardAlertMessage = null;
 
     // Reset police patrols back to patrol state
     this.policeAgents.forEach((p, i) => {
-      const idx = (i * 2 + 1) % POLICE_PATROL_LOOP.length;
+      const idx = (i * 6 + 3) % POLICE_PATROL_LOOP.length;
       const pt = POLICE_PATROL_LOOP[idx];
       const next = POLICE_PATROL_LOOP[(idx + 1) % POLICE_PATROL_LOOP.length];
       p.x = pt.x;
@@ -607,7 +829,7 @@ export class KickboardEngine {
   }
 
   public toggleDismount() {
-    if (this.phase !== 'playing') return;
+    if (this.phase !== 'playing' || this.fallTimer > 0) return;
     this.sound.unlock();
     this.isDismounted = !this.isDismounted;
     if (this.isDismounted && this.speedMps > 2.0) {
@@ -667,7 +889,7 @@ export class KickboardEngine {
     this.sound.unlock();
     this.sound.playBell();
 
-    // Alert nearby smartphone-distracted walkers on the bike lane to step aside!
+    // Alert nearby smartphone-distracted walkers on the bike lane & pets near the road
     let yieldedAny = false;
     for (let i = 0; i < this.phoneWalkers.length; i++) {
       const pw = this.phoneWalkers[i];
@@ -676,6 +898,16 @@ export class KickboardEngine {
           yieldedAny = true;
         }
         pw.yieldedTimer = 7.0;
+      }
+    }
+    for (let i = 0; i < this.pets.length; i++) {
+      const pet = this.pets[i];
+      if (Math.hypot(pet.x - this.px, pet.z - this.pz) < 16) {
+        if (pet.yieldedTimer <= 0) {
+          yieldedAny = true;
+          this.sound.playPetAlert(pet.rig.kind);
+        }
+        pet.yieldedTimer = 7.0;
       }
     }
     if (yieldedAny && this.phase === 'playing') {
@@ -826,12 +1058,28 @@ export class KickboardEngine {
       rig.setPedStates(sig.ewPed, sig.nsPed, sig.blinkOn);
     });
 
-    // Update ambient world traffic, pedestrians, cyclists & phone walkers
+    // Update ambient world traffic, motorcycles, pedestrians, cyclists, phone walkers & pets
     if (this.phase === 'title' || this.phase === 'playing') {
       this.updateTrafficCars(dt, sig);
+      this.updateMotorcycles(dt, sig);
       this.updatePedestrians(dt);
       this.updateCyclists(dt);
       this.updatePhoneWalkers(dt);
+      this.updatePets(dt);
+    }
+
+    if (this.rockHitCooldown > 0) this.rockHitCooldown = Math.max(0, this.rockHitCooldown - dt);
+    if (this.hazardAlertTimer > 0) {
+      this.hazardAlertTimer = Math.max(0, this.hazardAlertTimer - dt);
+      if (this.hazardAlertTimer === 0) this.hazardAlertMessage = null;
+    }
+    for (let i = 0; i < this.puddleHazards.length; i++) {
+      if (this.puddleHazards[i].splashCooldown > 0) {
+        this.puddleHazards[i].splashCooldown = Math.max(
+          0,
+          this.puddleHazards[i].splashCooldown - dt
+        );
+      }
     }
 
     if (this.phase === 'title') {
@@ -888,30 +1136,41 @@ export class KickboardEngine {
   };
 
   private updatePlayerPhysics(dt: number) {
+    const isFalling = this.fallTimer > 0;
+    if (isFalling) {
+      this.fallTimer = Math.max(0, this.fallTimer - dt);
+    }
+
     const accel =
-      this.heldKeys.has('KeyW') ||
-      this.heldKeys.has('ArrowUp') ||
-      this.virtualInput.throttle;
+      !isFalling &&
+      (this.heldKeys.has('KeyW') ||
+        this.heldKeys.has('ArrowUp') ||
+        this.virtualInput.throttle);
     const rev =
-      this.heldKeys.has('KeyS') ||
-      this.heldKeys.has('ArrowDown') ||
-      this.virtualInput.brake;
-    const brake = this.heldKeys.has('Space');
+      !isFalling &&
+      (this.heldKeys.has('KeyS') ||
+        this.heldKeys.has('ArrowDown') ||
+        this.virtualInput.brake);
+    const brake = !isFalling && this.heldKeys.has('Space');
     const left =
-      this.heldKeys.has('KeyA') ||
-      this.heldKeys.has('ArrowLeft') ||
-      this.virtualInput.left;
+      !isFalling &&
+      (this.heldKeys.has('KeyA') ||
+        this.heldKeys.has('ArrowLeft') ||
+        this.virtualInput.left);
     const right =
-      this.heldKeys.has('KeyD') ||
-      this.heldKeys.has('ArrowRight') ||
-      this.virtualInput.right;
+      !isFalling &&
+      (this.heldKeys.has('KeyD') ||
+        this.heldKeys.has('ArrowRight') ||
+        this.virtualInput.right);
 
     const spec = SCOOTER_SPECS[this.scooterType];
     // Korean PM legal top speed: 25 km/h (~6.94 m/s); Walking while pushing: ~8 km/h (2.25 m/s)
     const maxSpeed = this.isDismounted ? 2.25 : 7.0;
     const accelRate = this.isDismounted ? 5.2 : 4.2 * spec.accelMult;
 
-    if (brake) {
+    if (isFalling) {
+      this.speedMps = THREE.MathUtils.damp(this.speedMps, 0, 7.5, dt);
+    } else if (brake) {
       const decel = 11.5 * (this.isDismounted ? 1 : spec.brakeMult) * dt;
       if (Math.abs(this.speedMps) <= decel) this.speedMps = 0;
       else this.speedMps -= Math.sign(this.speedMps) * decel;
@@ -943,15 +1202,19 @@ export class KickboardEngine {
       ? 2.2
       : Math.min(1, Math.abs(this.speedMps) / 1.8) * 1.9 * spec.turnMult;
     const dirSign = this.speedMps >= -0.05 ? 1 : -1;
-    if (this.isDismounted) {
+    if (isFalling) {
+      this.leanAngle = THREE.MathUtils.damp(this.leanAngle, 0, 10, dt);
+    } else if (this.isDismounted) {
       this.heading += steerInput * 2.2 * dt;
     } else if (Math.abs(this.speedMps) > 0.08) {
       this.heading += steerInput * turnScale * dirSign * dt;
     }
 
-    const targetLean =
-      -steerInput * Math.min(Math.abs(this.speedMps) / 7.0, 1) * 0.14;
-    this.leanAngle = THREE.MathUtils.damp(this.leanAngle, targetLean, 10, dt);
+    if (!isFalling) {
+      const targetLean =
+        -steerInput * Math.min(Math.abs(this.speedMps) / 7.0, 1) * 0.14;
+      this.leanAngle = THREE.MathUtils.damp(this.leanAngle, targetLean, 10, dt);
+    }
 
     const fx = -Math.sin(this.heading);
     const fz = -Math.cos(this.heading);
@@ -1021,7 +1284,7 @@ export class KickboardEngine {
       }
     }
 
-    // Gentle collision avoidance against cyclists & smartphone walkers
+    // Gentle collision avoidance against cyclists, smartphone walkers, motorcycles, pets, rocks & puddles
     for (let i = 0; i < this.cyclists.length; i++) {
       const c = this.cyclists[i];
       const dx = nextX - c.x;
@@ -1056,6 +1319,102 @@ export class KickboardEngine {
         this.speedMps *= 0.45;
       }
     }
+    for (let i = 0; i < this.motorcycles.length; i++) {
+      const mc = this.motorcycles[i];
+      const dx = nextX - mc.x;
+      const dz = nextZ - mc.z;
+      const minR = 1.4;
+      if (dx * dx + dz * dz < minR * minR) {
+        const dist = Math.sqrt(dx * dx + dz * dz) || 0.01;
+        nextX = mc.x + (dx / dist) * minR;
+        nextZ = mc.z + (dz / dist) * minR;
+        if (Math.abs(this.speedMps) > 1.8) {
+          this.sound.playCollision();
+          this.hitstopTimer = 0.04;
+          this.shakeTimer = 0.24;
+          this.shakeIntensity = 0.18;
+          this.hazardAlertMessage = '🏍️ 오토바이 충돌! 차선 및 측방 안전거리를 확보하세요';
+          this.hazardAlertTimer = 2.5;
+        }
+        this.speedMps *= 0.28;
+      }
+    }
+    for (let i = 0; i < this.pets.length; i++) {
+      const pet = this.pets[i];
+      const dx = nextX - pet.x;
+      const dz = nextZ - pet.z;
+      const minR = 0.68;
+      if (dx * dx + dz * dz < minR * minR) {
+        const dist = Math.sqrt(dx * dx + dz * dz) || 0.01;
+        nextX = pet.x + (dx / dist) * minR;
+        nextZ = pet.z + (dz / dist) * minR;
+        if (pet.yieldedTimer <= 0) {
+          this.sound.playPetAlert(pet.rig.kind);
+          this.score = Math.max(0, this.score - 5);
+          this.hazardAlertMessage = '🐾 애완동물 접촉 주의! 발견 시 감속하거나 [B] 벨을 울리세요';
+          this.hazardAlertTimer = 2.6;
+        }
+        pet.yieldedTimer = 6.0;
+        this.speedMps *= 0.4;
+      }
+    }
+    if (!isFalling && this.rockHitCooldown <= 0) {
+      for (let i = 0; i < this.rockHazards.length; i++) {
+        const rock = this.rockHazards[i];
+        const dx = nextX - rock.x;
+        const dz = nextZ - rock.z;
+        const minR = 0.36 + rock.radius;
+        if (dx * dx + dz * dz < minR * minR) {
+          if (!this.isDismounted && Math.abs(this.speedMps) > 0.9) {
+            // Front wheel catches the rock -> rider pitches forward onto the asphalt
+            this.fallTimer = this.fallDuration;
+            this.rockHitCooldown = this.fallDuration + 0.65;
+            this.sound.playCollision();
+            this.hitstopTimer = 0.045;
+            this.shakeTimer = 0.35;
+            this.shakeIntensity = 0.24;
+            this.score = Math.max(0, this.score - 5);
+            this.speedMps =
+              Math.sign(this.speedMps) * Math.min(Math.abs(this.speedMps) * 0.52, 2.8);
+            this.hazardAlertMessage =
+              '🪨 돌부리에 걸려 앞으로 넘어졌습니다! 노면 장애물을 피하세요 (-5점)';
+            this.hazardAlertTimer = 2.6;
+          } else {
+            const dist = Math.sqrt(dx * dx + dz * dz) || 0.01;
+            nextX = rock.x + (dx / dist) * minR;
+            nextZ = rock.z + (dz / dist) * minR;
+            this.speedMps *= 0.45;
+          }
+          break;
+        }
+      }
+    }
+    for (let i = 0; i < this.puddleHazards.length; i++) {
+      const puddle = this.puddleHazards[i];
+      const dx = nextX - puddle.x;
+      const dz = nextZ - puddle.z;
+      const hitR = puddle.radius + 0.15;
+      if (dx * dx + dz * dz < hitR * hitR) {
+        if (!this.isDismounted && Math.abs(this.speedMps) > 1.0) {
+          // Wet road hydroplaning drag & subtle slip wobble
+          if (Math.abs(this.speedMps) > 4.2) {
+            this.speedMps = THREE.MathUtils.damp(this.speedMps, 4.2 * Math.sign(this.speedMps), 5, dt);
+          }
+          this.leanAngle = THREE.MathUtils.damp(
+            this.leanAngle,
+            Math.sin(this.elapsed * 18) * 0.2,
+            12,
+            dt
+          );
+          if (puddle.splashCooldown <= 0) {
+            this.sound.playSplash();
+            puddle.splashCooldown = 1.1;
+            this.hazardAlertMessage = '💧 물웅덩이 미끄럼 주의! 제동거리가 길어집니다';
+            this.hazardAlertTimer = 2.2;
+          }
+        }
+      }
+    }
 
     this.px = nextX;
     this.pz = nextZ;
@@ -1064,13 +1423,16 @@ export class KickboardEngine {
 
     this.kickboard.root.position.set(this.px, this.py, this.pz);
     this.kickboard.root.rotation.y = this.heading;
+    const fallProgress =
+      this.fallTimer > 0 ? 1 - this.fallTimer / this.fallDuration : 0;
     this.kickboard.updateAnimation(
       dt,
       this.speedMps,
       this.steerAngle,
       brake || (rev && this.speedMps > 0.2),
       this.isDismounted,
-      this.leanAngle
+      this.leanAngle,
+      fallProgress
     );
   }
 
@@ -1201,8 +1563,8 @@ export class KickboardEngine {
       }
     }
 
-    // Full 5.0-second grace window to return to a legal lane or dismount before police dispatch!
-    const VIOLATION_GRACE_SECONDS = 5.0;
+    // 2.5-second grace window to return to a legal lane or dismount before police dispatch
+    const VIOLATION_GRACE_SECONDS = 2.5;
     const anyChasing = this.policeAgents.some((p) => p.state === 'chasing');
     let violationGraceRemaining: number | null = null;
 
@@ -1217,7 +1579,7 @@ export class KickboardEngine {
         );
       }
 
-      // Dispatch nearest patrolling police car only AFTER the full 5s grace window expires!
+      // Dispatch nearest patrolling police car after the 2.5s grace window expires
       if (this.suspicion >= 1) {
         this.dispatchPoliceChase(violation);
       }
@@ -1366,38 +1728,60 @@ export class KickboardEngine {
       const segDx = p1.x - p0.x;
       const segDz = p1.z - p0.z;
       const segLen = Math.hypot(segDx, segDz) || 1;
+      const dirX = segDx / segLen;
+      const dirZ = segDz / segLen;
 
       const curX = THREE.MathUtils.lerp(p0.x, p1.x, car.t);
       const curZ = THREE.MathUtils.lerp(p0.z, p1.z, car.t);
 
-      // Stop near red signal when entering an intersection
+      // Stop before red signal ONLY when approaching an intersection (never mid-exit)
+      const isStraight = segLen > 20;
       const horizontal = Math.abs(segDx) > Math.abs(segDz);
       const green = horizontal ? sig.ewGreen : sig.nsGreen;
-      const approachingCorner =
-        (Math.abs(Math.abs(curX) - LOOP_X) < 16 &&
-          Math.abs(Math.abs(curZ) - LOOP_Z) < 16) &&
-        !(
-          Math.abs(Math.abs(curX) - LOOP_X) < 7 &&
-          Math.abs(Math.abs(curZ) - LOOP_Z) < 7
-        );
+      const cornerX = (curX >= 0 ? 1 : -1) * LOOP_X;
+      const cornerZ = (curZ >= 0 ? 1 : -1) * LOOP_Z;
+      const distAlongTowardCorner =
+        (cornerX - curX) * dirX + (cornerZ - curZ) * dirZ;
+      const approachingRed =
+        isStraight &&
+        !green &&
+        distAlongTowardCorner > 11.0 &&
+        distAlongTowardCorner < 20.0;
 
-      const targetSpeed = !green && approachingCorner ? 0 : car.maxSpeed;
-      car.speed = THREE.MathUtils.damp(car.speed, targetSpeed, 6, dt);
+      // Car-following headway spacing so cars queue cleanly without overlapping
+      let blockedAhead = false;
+      for (let j = 0; j < this.trafficAgents.length; j++) {
+        if (i === j) continue;
+        const other = this.trafficAgents[j];
+        if (other.path !== car.path) continue;
+        const ox = other.x - curX;
+        const oz = other.z - curZ;
+        const forwardDist = ox * dirX + oz * dirZ;
+        const lateralDist = Math.abs(ox * -dirZ + oz * dirX);
+        if (forwardDist > 0 && forwardDist < 9.5 && lateralDist < 2.2) {
+          blockedAhead = true;
+          break;
+        }
+      }
+
+      const targetSpeed = approachingRed || blockedAhead ? 0 : car.maxSpeed;
+      car.speed = THREE.MathUtils.damp(car.speed, targetSpeed, 7.5, dt);
 
       car.t += (car.speed * dt) / segLen;
-      if (car.t >= 1) {
+      while (car.t >= 1) {
         car.t -= 1;
         car.segIndex = (car.segIndex + 1) % car.path.length;
       }
 
       const np0 = car.path[car.segIndex];
       const np1 = car.path[(car.segIndex + 1) % car.path.length];
-      const nx = THREE.MathUtils.lerp(np0.x, np1.x, car.t);
-      const nz = THREE.MathUtils.lerp(np0.z, np1.z, car.t);
-      const h = Math.atan2(-(np1.x - np0.x), -(np1.z - np0.z));
+      car.x = THREE.MathUtils.lerp(np0.x, np1.x, car.t);
+      car.z = THREE.MathUtils.lerp(np0.z, np1.z, car.t);
+      const desiredH = Math.atan2(-(np1.x - np0.x), -(np1.z - np0.z));
+      car.heading = this.lerpAngle(car.heading, desiredH, 12 * dt);
 
-      car.rig.root.position.set(nx, 0, nz);
-      car.rig.root.rotation.y = h;
+      car.rig.root.position.set(car.x, 0, car.z);
+      car.rig.root.rotation.y = car.heading;
       const wheelSpin = (car.speed * dt) / 0.32;
       car.rig.wheels.forEach((w) => {
         w.rotation.x -= wheelSpin;
@@ -1512,6 +1896,139 @@ export class KickboardEngine {
     }
   }
 
+  private updatePets(dt: number) {
+    for (let i = 0; i < this.pets.length; i++) {
+      const pet = this.pets[i];
+      if (pet.yieldedTimer > 0) {
+        pet.yieldedTimer = Math.max(0, pet.yieldedTimer - dt);
+        // Scurry safely onto sidewalk
+        const dx = pet.safeX - pet.x;
+        const dz = pet.safeZ - pet.z;
+        const dist = Math.hypot(dx, dz);
+        if (dist > 0.2) {
+          const step = Math.min(dist, 2.4 * dt);
+          pet.x += (dx / dist) * step;
+          pet.z += (dz / dist) * step;
+          pet.rig.root.rotation.y = Math.atan2(-dx, -dz);
+        }
+      } else {
+        const distTotal = Math.hypot(pet.x1 - pet.x0, pet.z1 - pet.z0) || 1;
+        pet.progress += (pet.dir * pet.speed * dt) / distTotal;
+        if (pet.progress >= 1) {
+          pet.progress = 1;
+          pet.dir = -1;
+        } else if (pet.progress <= 0) {
+          pet.progress = 0;
+          pet.dir = 1;
+        }
+        const tx = THREE.MathUtils.lerp(pet.x0, pet.x1, pet.progress);
+        const tz = THREE.MathUtils.lerp(pet.z0, pet.z1, pet.progress);
+        const vx = tx - pet.x;
+        const vz = tz - pet.z;
+        pet.x = THREE.MathUtils.damp(pet.x, tx, 8, dt);
+        pet.z = THREE.MathUtils.damp(pet.z, tz, 8, dt);
+        if (Math.hypot(vx, vz) > 0.002) {
+          pet.rig.root.rotation.y = Math.atan2(-vx, -vz);
+        }
+      }
+
+      const y = getGroundHeightAt(pet.x, pet.z);
+      pet.rig.root.position.set(pet.x, y, pet.z);
+
+      pet.phase += dt * pet.speed * 7.5;
+      const trot = Math.sin(pet.phase) * 0.48;
+      pet.rig.legs[0].rotation.x = trot;
+      pet.rig.legs[1].rotation.x = -trot;
+      pet.rig.legs[2].rotation.x = -trot;
+      pet.rig.legs[3].rotation.x = trot;
+      pet.rig.tailPivot.rotation.y = Math.sin(pet.phase * 1.4) * 0.45;
+    }
+  }
+
+  private updateMotorcycles(
+    dt: number,
+    sig: ReturnType<typeof getSignalPhase>
+  ) {
+    for (let i = 0; i < this.motorcycles.length; i++) {
+      const mc = this.motorcycles[i];
+      const p0 = mc.path[mc.segIndex];
+      const p1 = mc.path[(mc.segIndex + 1) % mc.path.length];
+      const segDx = p1.x - p0.x;
+      const segDz = p1.z - p0.z;
+      const segLen = Math.hypot(segDx, segDz) || 1;
+      const dirX = segDx / segLen;
+      const dirZ = segDz / segLen;
+
+      const curX = THREE.MathUtils.lerp(p0.x, p1.x, mc.t);
+      const curZ = THREE.MathUtils.lerp(p0.z, p1.z, mc.t);
+
+      const isStraight = segLen > 20;
+      const horizontal = Math.abs(segDx) > Math.abs(segDz);
+      const green = horizontal ? sig.ewGreen : sig.nsGreen;
+      const cornerX = (curX >= 0 ? 1 : -1) * LOOP_X;
+      const cornerZ = (curZ >= 0 ? 1 : -1) * LOOP_Z;
+      const distAlongTowardCorner =
+        (cornerX - curX) * dirX + (cornerZ - curZ) * dirZ;
+      const approachingRed =
+        isStraight &&
+        !green &&
+        distAlongTowardCorner > 11.0 &&
+        distAlongTowardCorner < 20.0;
+
+      // Keep safe following distance behind both cars and other motorcycles on same lane
+      let blockedAhead = false;
+      for (let j = 0; j < this.trafficAgents.length; j++) {
+        const other = this.trafficAgents[j];
+        if (other.path !== mc.path) continue;
+        const ox = other.x - curX;
+        const oz = other.z - curZ;
+        const forwardDist = ox * dirX + oz * dirZ;
+        const lateralDist = Math.abs(ox * -dirZ + oz * dirX);
+        if (forwardDist > 0 && forwardDist < 9.0 && lateralDist < 2.2) {
+          blockedAhead = true;
+          break;
+        }
+      }
+      if (!blockedAhead) {
+        for (let j = 0; j < this.motorcycles.length; j++) {
+          if (i === j) continue;
+          const other = this.motorcycles[j];
+          if (other.path !== mc.path) continue;
+          const ox = other.x - curX;
+          const oz = other.z - curZ;
+          const forwardDist = ox * dirX + oz * dirZ;
+          const lateralDist = Math.abs(ox * -dirZ + oz * dirX);
+          if (forwardDist > 0 && forwardDist < 7.0 && lateralDist < 2.0) {
+            blockedAhead = true;
+            break;
+          }
+        }
+      }
+
+      const targetSpeed = approachingRed || blockedAhead ? 0 : mc.maxSpeed;
+      mc.speed = THREE.MathUtils.damp(mc.speed, targetSpeed, 8, dt);
+
+      mc.t += (mc.speed * dt) / segLen;
+      while (mc.t >= 1) {
+        mc.t -= 1;
+        mc.segIndex = (mc.segIndex + 1) % mc.path.length;
+      }
+
+      const np0 = mc.path[mc.segIndex];
+      const np1 = mc.path[(mc.segIndex + 1) % mc.path.length];
+      mc.x = THREE.MathUtils.lerp(np0.x, np1.x, mc.t);
+      mc.z = THREE.MathUtils.lerp(np0.z, np1.z, mc.t);
+      const desiredH = Math.atan2(-(np1.x - np0.x), -(np1.z - np0.z));
+      mc.heading = this.lerpAngle(mc.heading, desiredH, 12 * dt);
+
+      mc.rig.root.position.set(mc.x, 0, mc.z);
+      mc.rig.root.rotation.y = mc.heading;
+      const wheelSpin = (mc.speed * dt) / 0.32;
+      mc.rig.frontWheel.rotation.x -= wheelSpin;
+      mc.rig.rearWheel.rotation.x -= wheelSpin;
+    }
+  }
+
   private updateCheckpoints(dt: number) {
     if (this.mode !== 'mission') return;
 
@@ -1543,20 +2060,33 @@ export class KickboardEngine {
     const fx = -Math.sin(this.heading);
     const fz = -Math.cos(this.heading);
 
+    const fallDrop =
+      this.fallTimer > 0
+        ? Math.sin((1 - this.fallTimer / this.fallDuration) * Math.PI)
+        : 0;
+
     if (this.cameraPreset === 'chase') {
       _camDesiredPos.set(
-        this.px - fx * 6.4,
-        this.py + 3.05,
-        this.pz - fz * 6.4
+        this.px - fx * (6.4 - fallDrop * 0.7),
+        this.py + 3.05 - fallDrop * 0.65,
+        this.pz - fz * (6.4 - fallDrop * 0.7)
       );
-      _camDesiredLook.set(this.px + fx * 6.0, this.py + 1.15, this.pz + fz * 6.0);
+      _camDesiredLook.set(
+        this.px + fx * 6.0,
+        this.py + 1.15 - fallDrop * 0.65,
+        this.pz + fz * 6.0
+      );
     } else if (this.cameraPreset === 'firstPerson') {
       _camDesiredPos.set(
-        this.px + fx * 0.15,
-        this.py + 1.56,
-        this.pz + fz * 0.15
+        this.px + fx * (0.15 + fallDrop * 0.65),
+        this.py + 1.56 - fallDrop * 1.18,
+        this.pz + fz * (0.15 + fallDrop * 0.65)
       );
-      _camDesiredLook.set(this.px + fx * 14, this.py + 1.32, this.pz + fz * 14);
+      _camDesiredLook.set(
+        this.px + fx * 14,
+        this.py + 1.32 - fallDrop * 1.25,
+        this.pz + fz * 14
+      );
     } else {
       // Top-down angled tactical view
       _camDesiredPos.set(
@@ -1625,6 +2155,11 @@ export class KickboardEngine {
         pw.yieldedTimer <= 0 &&
         Math.hypot(pw.x - this.px, pw.z - this.pz) < 16
     );
+    const nearPet = this.pets.some(
+      (pet) =>
+        pet.yieldedTimer <= 0 &&
+        Math.hypot(pet.x - this.px, pet.z - this.pz) < 15
+    );
     const distanceToSchoolMeters = Math.round(
       computeRemainingRouteMeters(
         this.px,
@@ -1661,6 +2196,8 @@ export class KickboardEngine {
         ewPedRemaining: activeSig.ewPedRemaining,
         nsPedRemaining: activeSig.nsPedRemaining,
         nearPhoneWalker,
+        nearPet,
+        hazardAlert: this.hazardAlertTimer > 0 ? this.hazardAlertMessage : null,
         playerX: this.px,
         playerZ: this.pz,
         playerHeading: this.heading,

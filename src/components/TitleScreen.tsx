@@ -161,7 +161,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
               <span>인도 주행 금지</span>
             </div>
             <p className="text-[10px] text-slate-300 leading-snug">
-              인도 진입 후 5초 내 미복귀 시 경찰 출동·벌금
+              인도 진입 후 2.5초 내 미복귀 시 경찰 출동·벌금
             </p>
           </div>
           <div className="bg-slate-900/90 border border-slate-700/70 rounded-xl p-2.5">
